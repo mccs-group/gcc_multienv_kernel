@@ -224,7 +224,7 @@ def start_kernel():
             else:
                 for line in runtime_data:
                     pieces = line.split()
-                    runtimes[pieces[6]] = (float(pieces[0]), float(self_time[2]))
+                    runtimes[pieces[6]] = (float(pieces[0]), float(pieces[2]))
 
             for fun_name in active_funcs_lists.keys():
                 func_env_address = f"\0{args.bench_name}:{fun_name}_{args.instance}"
@@ -236,7 +236,7 @@ def start_kernel():
                 try:
                     env_socket.sendto(
                         bytes(
-                            struct.pack(
+                            struct.pack( # size runtime_percent runtime_sec
                                 "idd",
                                 sizes[fun_name],
                                 runtimes[fun_name][0],
