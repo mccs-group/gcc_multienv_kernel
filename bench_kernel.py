@@ -5,7 +5,7 @@ from pathlib import Path
 from subprocess import *
 import shlex
 from time import *
-import os
+import os, shutil
 import re
 import sys
 import argparse
@@ -58,7 +58,7 @@ def start_kernel():
         socket.AF_UNIX, socket.SOCK_DGRAM, 0
     ) as gcc_socket, socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM, 0) as env_socket:
         gcc_socket.bind(socket_name)
-        env_socket.bind(f"\0{args.bench_name}:backend_{args.instance}".encode("utf-8"))
+        env_socket.bind(f"\0{args.bench_name}:backend_{args.instance}")
 
         while True:  # Bench kernels works until there is at least one env using it
             gcc_instance = Popen(
@@ -86,9 +86,7 @@ def start_kernel():
                     )
                     func_env_address = f"\0{args.bench_name}:{fun_name}_{args.instance}"
                     try:
-                        env_socket.sendto(
-                            fun_name.encode("utf-8"), func_env_address.encode("utf-8")
-                        )
+                        env_socket.sendto(fun_name.encode("utf-8"), func_env_address)
                         pass_list, rem_address = env_socket.recvfrom(4096)
                         if func_env_address != rem_address.decode("utf-8"):
                             print(
@@ -212,7 +210,7 @@ def start_kernel():
                     "gprof -bp pg_main.elf", shell=True, capture_output=True, check=True
                 )
                 .stdout.decode("utf-8")
-                .splitlines()
+                .splitlines()[5:]
             )
             os.unlink("gmon.out")
             os.unlink("gmon.sum")
@@ -224,23 +222,24 @@ def start_kernel():
             else:
                 for line in runtime_data:
                     pieces = line.split()
-                    runtimes[pieces[6]] = (float(pieces[0]), float(pieces[2]))
+                    if len(pieces) == 7:
+                        runtimes[pieces[6]] = (float(pieces[0]), float(pieces[2]))
 
             for fun_name in active_funcs_lists.keys():
                 func_env_address = f"\0{args.bench_name}:{fun_name}_{args.instance}"
-                if fun_name not in sizes or fun_name not in runtimes:
+                if fun_name not in sizes:
                     print(
-                        "Symbol [{fun_name}] was not properly profiled, size or runtime data missing",
+                        f"Symbol [{fun_name}] was not properly profiled, size or runtime data missing",
                         file=sys.stderr,
                     )
                 try:
                     env_socket.sendto(
                         bytes(
-                            struct.pack( # size runtime_percent runtime_sec
-                                "idd",
+                            struct.pack(  # runtime_percent runtime_sec size
+                                "ddi",
+                                runtimes.get(fun_name, (0.0, 0.0))[0],
+                                runtimes.get(fun_name, (0.0, 0.0))[1],
                                 sizes[fun_name],
-                                runtimes[fun_name][0],
-                                runtimes[fun_name][1],
                             )
                         ),
                         func_env_address,
@@ -252,9 +251,14 @@ def start_kernel():
                     )
 
             if len(active_funcs_lists) == 0:
+                print("No envs connected to kernel, dying", file=sys.stderr)
                 break
 
-        os.unlink(socket_name)
+        cwd = os.path.abspath(os.getcwd())
+        if cwd.startswith("/tmp") or cwd.startswith("/run"):
+            shutil.rmtree(os.getcwd())
+        else:
+            os.unlink(socket_name)
 
 
 def test_gcc():
