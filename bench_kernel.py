@@ -60,7 +60,7 @@ def start_kernel():
         gcc_socket.bind(socket_name)
         env_socket.bind(f"\0{args.bench_name}:backend_{args.instance}")
 
-        afk_env = []
+        afk_env = set()
         while True:  # Bench kernels works until there is at least one env using it
             gcc_instance = Popen(
                 build_str, stderr=PIPE, shell=True
@@ -92,8 +92,6 @@ def start_kernel():
                             env_socket.sendto(
                                 fun_name.encode("utf-8"), func_env_address
                             )
-                        else:
-                            env_socket.sendto("".encode("utf-8"), func_env_address)
                         pass_list, rem_address = env_socket.recvfrom(
                             4096, socket.MSG_DONTWAIT
                         )
@@ -131,10 +129,13 @@ def start_kernel():
                         ConnectionRefusedError,
                     ) as e:
                         if isinstance(e, BlockingIOError):
-                            if fun_name not in afk_env:
-                                afk_env.append(fun_name)
-                        elif fun_name in afk_env:
-                            afk_env.remove(fun_name)
+                            try:
+                                env_socket.sendto("".encode("utf-8"), func_env_address)
+                                afk_env = afk_env | {fun_name}
+                            except ConnectionRefusedError:
+                                afk_env = afk_env - {fun_name}
+                        else:
+                            afk_env = afk_env - {fun_name}
                         list_msg = fun_name.ljust(100, "\0") + bytes(3996).decode(
                             "utf-8"
                         )
@@ -271,8 +272,7 @@ def start_kernel():
                         file=sys.stderr,
                     )
 
-            if len(active_funcs_lists) == 0 and afk_env == []:
-                print("No envs connected to kernel, dying", file=sys.stderr)
+            if len(active_funcs_lists) == 0 and len(afk_env) == 0:
                 break
 
         cwd = os.path.abspath(os.getcwd())
