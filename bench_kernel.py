@@ -60,6 +60,7 @@ def start_kernel():
         gcc_socket.bind(socket_name)
         env_socket.bind(f"\0{args.bench_name}:backend_{args.instance}")
 
+        afk_env = []
         while True:  # Bench kernels works until there is at least one env using it
             gcc_instance = Popen(
                 build_str, stderr=PIPE, shell=True
@@ -86,8 +87,16 @@ def start_kernel():
                     )
                     func_env_address = f"\0{args.bench_name}:{fun_name}_{args.instance}"
                     try:
-                        env_socket.sendto(fun_name.encode("utf-8"), func_env_address)
-                        pass_list, rem_address = env_socket.recvfrom(4096)
+                        # Send message with fun name only if we have not done it on prev cycle
+                        if fun_name not in afk_env:
+                            env_socket.sendto(
+                                fun_name.encode("utf-8"), func_env_address
+                            )
+                        else:
+                            env_socket.sendto("".encode("utf-8"), func_env_address)
+                        pass_list, rem_address = env_socket.recvfrom(
+                            4096, socket.MSG_DONTWAIT
+                        )
                         if func_env_address != rem_address.decode("utf-8"):
                             print(
                                 (
@@ -113,7 +122,19 @@ def start_kernel():
                             )
                             continue
                         active_funcs_lists[fun_name] = list_msg
-                    except (ConnectionError, FileNotFoundError):
+                        if fun_name in afk_env:
+                            afk_env.remove(fun_name)
+                    except (
+                        ConnectionError,
+                        FileNotFoundError,
+                        BlockingIOError,
+                        ConnectionRefusedError,
+                    ) as e:
+                        if isinstance(e, BlockingIOError):
+                            if fun_name not in afk_env:
+                                afk_env.append(fun_name)
+                        elif fun_name in afk_env:
+                            afk_env.remove(fun_name)
                         list_msg = fun_name.ljust(100, "\0") + bytes(3996).decode(
                             "utf-8"
                         )
@@ -250,7 +271,7 @@ def start_kernel():
                         file=sys.stderr,
                     )
 
-            if len(active_funcs_lists) == 0:
+            if len(active_funcs_lists) == 0 and afk_env == []:
                 print("No envs connected to kernel, dying", file=sys.stderr)
                 break
 
