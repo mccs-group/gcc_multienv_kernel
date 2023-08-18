@@ -131,12 +131,8 @@ class MultienvBenchKernel:
             self.sizes[pieces[3]] = int(pieces[1])
 
     def get_runtimes(self):
-        print(f"KERNEL: run_args: {self.args.run_string}")
         for i in range(0, self.args.bench_repeats):
             for run_str in self.args.run_string:
-                print(
-                    f"KERNEL: running 'qemu-aarch64 -L /usr/aarch64-linux-gnu ./pg_main.elf {run_str}'"
-                )
                 run(
                     f"qemu-aarch64 -L /usr/aarch64-linux-gnu ./pg_main.elf {run_str}",
                     shell=True,
