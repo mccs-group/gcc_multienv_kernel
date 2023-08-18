@@ -64,8 +64,11 @@ class MultienvBenchKernel:
             f"{self.args.build_string} -o pg_main.elf"
         )
 
-        with open("symbols.txt", "r") as symbols_list:
-            self.bench_symbols = [x.strip() for x in symbols_list.readlines()]
+        symbols_list = Path('benchmark_info.txt')
+        lines = [x.strip() for x in symbols_list.read_text().splitlines()]
+        index = lines.index('functions:') + 1
+        self.bench_symbols = lines[index:]
+
 
         self.env_socket = env_socket
         self.gcc_socket = gcc_socket
@@ -92,6 +95,7 @@ class MultienvBenchKernel:
                     f"Symbol [{fun_name}] was not properly profiled, size or runtime data missing",
                     file=sys.stderr,
                 )
+                self.sizes[fun_name] = 0
             try:
                 self.env_socket.sendto(
                     bytes(
