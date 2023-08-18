@@ -18,7 +18,7 @@ class MultienvBenchKernel:
         logging.debug("KERNEL: init start")
         self.parser = argparse.ArgumentParser()
         self.parser.add_argument(
-            "-r", "--run", dest="run_string", action="store", default=""
+            "-r", "--run", dest="run_string", action="append", default=[]
         )
         self.parser.add_argument(
             "-b", "--build", dest="build_string", action="store", default=""
@@ -64,11 +64,10 @@ class MultienvBenchKernel:
             f"{self.args.build_string} -o pg_main.elf"
         )
 
-        symbols_list = Path('benchmark_info.txt')
+        symbols_list = Path("benchmark_info.txt")
         lines = [x.strip() for x in symbols_list.read_text().splitlines()]
-        index = lines.index('functions:') + 1
+        index = lines.index("functions:") + 1
         self.bench_symbols = lines[index:]
-
 
         self.env_socket = env_socket
         self.gcc_socket = gcc_socket
@@ -132,11 +131,16 @@ class MultienvBenchKernel:
             self.sizes[pieces[3]] = int(pieces[1])
 
     def get_runtimes(self):
+        print(f"KERNEL: run_args: {self.args.run_string}")
         for i in range(0, self.args.bench_repeats):
-            run(
-                f"qemu-aarch64 -L /usr/aarch64-linux-gnu ./pg_main.elf {self.args.run_string}",
-                shell=True,
-            )
+            for run_str in self.args.run_string:
+                print(
+                    f"KERNEL: running 'qemu-aarch64 -L /usr/aarch64-linux-gnu ./pg_main.elf {run_str}'"
+                )
+                run(
+                    f"qemu-aarch64 -L /usr/aarch64-linux-gnu ./pg_main.elf {run_str}",
+                    shell=True,
+                )
             run("gprof -s pg_main.elf", shell=True, check=True)
 
         runtime_data = (
@@ -288,7 +292,7 @@ class MultienvBenchKernel:
                 fun_name = self.gcc_socket.recv(4096, socket.MSG_DONTWAIT).decode(
                     "utf-8"
                 )
-                if fun_name in self.active_funcs_lists:
+                if fun_name in self.active_funcs_lists.keys():
                     self.gcc_socket.sendto(
                         self.active_funcs_lists[fun_name],
                         "gcc_plugin.soc".encode("utf-8"),
