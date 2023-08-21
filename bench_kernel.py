@@ -50,6 +50,9 @@ class MultienvBenchKernel:
         )
         self.args = self.parser.parse_args()
 
+        if self.args.run_string == []:
+            self.args.run_string = [""]
+
         self.socket_name = "kernel.soc"
 
         self.build_str = (
@@ -116,7 +119,7 @@ class MultienvBenchKernel:
     def get_sizes(self):
         size_info = (
             run(
-                "nm --demangle --print-size --size-sort --radix=d main.elf",
+                "${AARCH_PREFIX}nm --print-size --size-sort --radix=d main.elf",
                 shell=True,
                 capture_output=True,
             )
@@ -126,8 +129,6 @@ class MultienvBenchKernel:
         self.sizes = {}
         for line in size_info:
             pieces = line.split()
-            if pieces[2] != "t" and pieces[2] != "T":
-                continue
             self.sizes[pieces[3]] = int(pieces[1])
 
     def get_runtimes(self):
@@ -137,10 +138,19 @@ class MultienvBenchKernel:
                     f"qemu-aarch64 -L /usr/aarch64-linux-gnu ./pg_main.elf {run_str}",
                     shell=True,
                 )
-            run("gprof -s pg_main.elf", shell=True, check=True)
+            run(
+                "${AARCH_PREFIX}nm --extern-only --defined-only -v --print-file-name pg_main.elf > symtab",
+                shell=True,
+            )
+            run("${AARCH_PREFIX}gprof -s -Ssymtab pg_main.elf", shell=True, check=True)
 
         runtime_data = (
-            run("gprof -bp pg_main.elf", shell=True, capture_output=True, check=True)
+            run(
+                "${AARCH_PREFIX}gprof -bp --no-demangle pg_main.elf",
+                shell=True,
+                capture_output=True,
+                check=True,
+            )
             .stdout.decode("utf-8")
             .splitlines()[5:]
         )
@@ -154,8 +164,7 @@ class MultienvBenchKernel:
         else:
             for line in runtime_data:
                 pieces = line.split()
-                if len(pieces) == 7:
-                    self.runtimes[pieces[6]] = (float(pieces[0]), float(pieces[2]))
+                self.runtimes[pieces[-1]] = (float(pieces[0]), float(pieces[2]))
 
     def compile_instrumented(self):
         gcc_instance = Popen(
