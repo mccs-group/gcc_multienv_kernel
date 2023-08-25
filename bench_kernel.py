@@ -137,6 +137,8 @@ class MultienvBenchKernel:
                 run(
                     f"qemu-aarch64 -L /usr/aarch64-linux-gnu ./pg_main.elf {run_str}",
                     shell=True,
+                    stdout=DEVNULL,
+                    stderr=DEVNULL,
                 )
             run(
                 "${AARCH_PREFIX}nm --extern-only --defined-only -v --print-file-name pg_main.elf > symtab",
