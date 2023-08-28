@@ -11,6 +11,8 @@ import re
 import sys
 import argparse
 import struct
+import hashlib
+import base64
 
 
 class MultienvBenchKernel:
@@ -70,7 +72,7 @@ class MultienvBenchKernel:
         symbols_list = Path("benchmark_info.txt")
         lines = [x.strip() for x in symbols_list.read_text().splitlines()]
         index = lines.index("functions:") + 1
-        self.bench_symbols = lines[index:]
+        self.bench_symbols = [self.encode_fun_name(x) for x in lines[index:]]
 
         self.env_socket = env_socket
         self.gcc_socket = gcc_socket
@@ -85,10 +87,9 @@ class MultienvBenchKernel:
             shutil.rmtree(os.getcwd())
         else:
             os.unlink(self.socket_name)
-        exit(0)
 
     def sendout_profiles(self):
-        for fun_name in self.active_funcs_lists.keys():
+        for fun_name in self.active_funcs_lists:
             func_env_address = (
                 f"\0{self.args.bench_name}:{fun_name}_{self.args.instance}"
             )
@@ -129,7 +130,7 @@ class MultienvBenchKernel:
         self.sizes = {}
         for line in size_info:
             pieces = line.split()
-            self.sizes[pieces[3]] = int(pieces[1])
+            self.sizes[self.encode_fun_name(pieces[3])] = int(pieces[1])
 
     def get_runtimes(self):
         for i in range(0, self.args.bench_repeats):
@@ -162,15 +163,18 @@ class MultienvBenchKernel:
         self.runtimes = {}
         if " no time accumulated" in runtime_data:
             for fun_name in self.active_funcs_lists.keys():
-                self.runtimes[fun_name] = (0.0, 0.0)
+                self.runtimes[self.encode_fun_name(fun_name)] = (0.0, 0.0)
         else:
             for line in runtime_data:
                 pieces = line.split()
-                self.runtimes[pieces[-1]] = (float(pieces[0]), float(pieces[2]))
+                self.runtimes[self.encode_fun_name(pieces[-1])] = (
+                    float(pieces[0]),
+                    float(pieces[2]),
+                )
 
     def compile_instrumented(self):
         gcc_instance = Popen(
-            self.gprof_build_str, stderr=PIPE, shell=True
+            self.gprof_build_str, shell=True
         )  # Compile with gprof to get per-function runtime info
 
         while not os.path.exists("gcc_plugin.soc"):
@@ -180,7 +184,7 @@ class MultienvBenchKernel:
                     f"gcc failed: return code {gcc_instance.returncode}\n",
                     file=sys.stderr,
                 )
-                print(gcc_instance.communicate()[1].decode("utf-8"), file=sys.stderr)
+                self.final_cleanup()
                 exit(1)
             pass
 
@@ -189,14 +193,15 @@ class MultienvBenchKernel:
                 fun_name = self.gcc_socket.recv(4096, socket.MSG_DONTWAIT).decode(
                     "utf-8"
                 )
-                if fun_name in self.active_funcs_lists:
+                sock_fun_name = self.encode_fun_name(fun_name)
+                if sock_fun_name in self.active_funcs_lists:
                     self.gcc_socket.sendto(
-                        self.active_funcs_lists[fun_name],
+                        self.active_funcs_lists[sock_fun_name],
                         "gcc_plugin.soc".encode("utf-8"),
                     )
                     embedding = self.gcc_socket.recv(1024)
                 else:
-                    list_msg = fun_name.ljust(100, "\0").encode("utf-8") + bytes(1)
+                    list_msg = bytes(1)
                     self.gcc_socket.sendto(list_msg, "gcc_plugin.soc".encode("utf-8"))
                     embedding = self.gcc_socket.recv(1024)
             except BlockingIOError:
@@ -207,8 +212,20 @@ class MultienvBenchKernel:
                 f"gcc failed: return code {gcc_instance.returncode}\n",
                 file=sys.stderr,
             )
-            print(gcc_instance.communicate()[1].decode("utf-8"), file=sys.stderr)
+            self.final_cleanup()
             exit(1)
+
+    def encode_fun_name(self, fun_name):
+        avail_length = (
+            107 - len(self.args.bench_name) - len(str(self.args.instance)) - 2
+        )
+        if len(fun_name) > avail_length or len(fun_name) > 100:
+            return base64.b64encode(
+                hashlib.sha256(fun_name.encode("utf-8")).digest(),
+                "-_".encode("utf-8"),
+            ).decode("utf-8")
+        else:
+            return fun_name
 
     def validate_addr(self, parsed_addr):
         if parsed_addr[1] != self.args.bench_name:
@@ -217,6 +234,7 @@ class MultienvBenchKernel:
                 f"Expected '{self.args.bench_name}' got '{parsed_addr[1]}'",
                 file=sys.stderr,
             )
+            self.final_cleanup()
             exit(1)
         if int(parsed_addr[3]) != self.args.instance:
             print(
@@ -224,21 +242,21 @@ class MultienvBenchKernel:
                 f"Expected '{self.args.instance}' got '{parsed_addr[3]}'",
                 file=sys.stderr,
             )
+            self.final_cleanup()
             exit(1)
         if parsed_addr[2] not in self.bench_symbols:
             print(
                 f"Got message from env with incorrect function name. "
-                f"Got '{self.parsed_addr[2]}'",
+                f"Got '{parsed_addr[2]}'",
                 file=sys.stderr,
             )
+            self.final_cleanup()
             exit(1)
 
     def add_env_to_list(self, pass_list, addr):
         parsed_addr = re.match("\0(.*):(.*)_(\d*)", addr.decode("utf-8"))
         self.validate_addr(parsed_addr)
-        self.active_funcs_lists[parsed_addr[2]] = (
-            parsed_addr[2].ljust(100, "\0").encode("utf-8") + pass_list
-        )
+        self.active_funcs_lists[parsed_addr[2]] = pass_list
 
     def gather_active_envs(self):
         while True:
@@ -277,10 +295,11 @@ class MultienvBenchKernel:
                 if not afk_envs_exist:
                     logging.debug("KERNEL: I have fallen and will not get up")
                     self.final_cleanup()
+                    exit(0)
 
     def compile_for_size(self):
         gcc_instance = Popen(
-            self.build_str, stderr=PIPE, shell=True
+            self.build_str, shell=True
         )  # Compile without gprof do all the compilation stuff
 
         while not os.path.exists("gcc_plugin.soc"):
@@ -290,7 +309,7 @@ class MultienvBenchKernel:
                     f"gcc failed: return code {gcc_instance.returncode}\n",
                     file=sys.stderr,
                 )
-                print(gcc_instance.communicate()[1].decode("utf-8"), file=sys.stderr)
+                self.final_cleanup()
                 exit(1)
             pass
 
@@ -299,20 +318,28 @@ class MultienvBenchKernel:
                 fun_name = self.gcc_socket.recv(4096, socket.MSG_DONTWAIT).decode(
                     "utf-8"
                 )
-                if fun_name in self.active_funcs_lists.keys():
+                sock_fun_name = self.encode_fun_name(fun_name)
+                if sock_fun_name in self.active_funcs_lists:
+                    logging.debug(f"KERNEL: Sending list for {sock_fun_name}")
                     self.gcc_socket.sendto(
-                        self.active_funcs_lists[fun_name],
+                        self.active_funcs_lists[sock_fun_name],
                         "gcc_plugin.soc".encode("utf-8"),
                     )
+                    logging.debug(
+                        f"KERNEL: Sent list {self.active_funcs_lists[sock_fun_name]} to gcc"
+                    )
                     embedding = self.gcc_socket.recv(1024)
+                    logging.debug(f"KERNEL: Got embedding from gcc")
                     self.env_socket.sendto(
                         embedding,
-                        f"\0{self.args.bench_name}:{fun_name}_{self.args.instance}".encode(
+                        f"\0{self.args.bench_name}:{sock_fun_name}_{self.args.instance}".encode(
                             "utf-8"
                         ),
                     )
+                    logging.debug(f"KERNEL: Sent embedding to env")
                 else:
-                    list_msg = fun_name.ljust(100, "\0").encode("utf-8") + bytes(1)
+                    logging.debug(f"KERNEL: No list for {sock_fun_name}")
+                    list_msg = bytes(1)
                     self.gcc_socket.sendto(list_msg, "gcc_plugin.soc".encode("utf-8"))
                     embedding = self.gcc_socket.recv(1024)
             except BlockingIOError:
@@ -323,7 +350,7 @@ class MultienvBenchKernel:
                 f"gcc failed: return code {gcc_instance.returncode}\n",
                 file=sys.stderr,
             )
-            print(gcc_instance.communicate()[1].decode("utf-8"), file=sys.stderr)
+            self.final_cleanup()
             exit(1)
 
     def kernel_loop(self):
@@ -363,6 +390,7 @@ def test_gcc():
             if gcc_instance.returncode != None:
                 print(f"gcc failed: return code {gcc_instance.returncode}\n")
                 print(gcc_instance.communicate()[1].decode("utf-8"))
+                self.final_cleanup()
                 exit(1)
             pass
 
