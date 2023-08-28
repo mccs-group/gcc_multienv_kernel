@@ -69,6 +69,8 @@ class MultienvBenchKernel:
             f"{self.args.build_string} -o pg_main.elf"
         )
 
+        self.EMBED_LEN_MULTIPLIER = 200
+
         symbols_list = Path("benchmark_info.txt")
         lines = [x.strip() for x in symbols_list.read_text().splitlines()]
         index = lines.index("functions:") + 1
@@ -199,11 +201,11 @@ class MultienvBenchKernel:
                         self.active_funcs_lists[sock_fun_name],
                         "gcc_plugin.soc".encode("utf-8"),
                     )
-                    embedding = self.gcc_socket.recv(1024)
+                    embedding = self.gcc_socket.recv(1024 * self.EMBED_LEN_MULTIPLIER)
                 else:
                     list_msg = bytes(1)
                     self.gcc_socket.sendto(list_msg, "gcc_plugin.soc".encode("utf-8"))
-                    embedding = self.gcc_socket.recv(1024)
+                    embedding = self.gcc_socket.recv(1024 * self.EMBED_LEN_MULTIPLIER)
             except BlockingIOError:
                 pass
 
@@ -328,7 +330,7 @@ class MultienvBenchKernel:
                     logging.debug(
                         f"KERNEL: Sent list {self.active_funcs_lists[sock_fun_name]} to gcc"
                     )
-                    embedding = self.gcc_socket.recv(1024)
+                    embedding = self.gcc_socket.recv(1024 * self.EMBED_LEN_MULTIPLIER)
                     logging.debug(f"KERNEL: Got embedding from gcc")
                     self.env_socket.sendto(
                         embedding,
@@ -341,7 +343,7 @@ class MultienvBenchKernel:
                     logging.debug(f"KERNEL: No list for {sock_fun_name}")
                     list_msg = bytes(1)
                     self.gcc_socket.sendto(list_msg, "gcc_plugin.soc".encode("utf-8"))
-                    embedding = self.gcc_socket.recv(1024)
+                    embedding = self.gcc_socket.recv(1024 * self.EMBED_LEN_MULTIPLIER)
             except BlockingIOError:
                 pass
 
@@ -368,49 +370,6 @@ class MultienvBenchKernel:
             logging.debug("KERNEL: got runtimes")
             self.sendout_profiles()
             logging.debug("KERNEL: sent profiles")
-
-
-def test_gcc():
-    plugin_path = "test/plugin.so"
-    socket_name = "kernel.soc"
-    gcc_str = (
-        f"$AARCH_GCC -fplugin={plugin_path} -O2 -fplugin-arg-plugin-dyn_replace=learning "
-        f"-fplugin-arg-plugin-remote_socket={socket_name} -fplugin-arg-plugin-dump_format=executed "
-        "test/main.c -o test/main.elf > test/log.log"
-    )
-
-    # setup socket for communication with gcc plugin
-    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM, 0) as rec_socket:
-        rec_socket.bind(socket_name)
-
-        gcc_instance = Popen(gcc_str, stderr=PIPE, shell=True)
-
-        while not os.path.exists("gcc_plugin.soc"):
-            gcc_instance.poll()
-            if gcc_instance.returncode != None:
-                print(f"gcc failed: return code {gcc_instance.returncode}\n")
-                print(gcc_instance.communicate()[1].decode("utf-8"))
-                self.final_cleanup()
-                exit(1)
-            pass
-
-        rec_socket.connect("gcc_plugin.soc")
-
-        while gcc_instance.poll() == None:
-            try:
-                fun_name = rec_socket.recv(4096, socket.MSG_DONTWAIT)
-                print(f"Got new function {fun_name}")
-                rec_socket.send(fun_name)
-                embedding = rec_socket.recv(47)  # current embedding length
-                print(f"Got new embedding {embedding}")
-            except BlockingIOError:
-                pass
-
-        if gcc_instance.returncode != 0:
-            print(f"gcc failed: return code {gcc_instance.returncode}\n")
-            print(gcc_instance.communicate()[1].decode("utf-8"))
-
-        os.unlink(socket_name)
 
 
 if __name__ == "__main__":
