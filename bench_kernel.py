@@ -13,6 +13,15 @@ import argparse
 import struct
 import hashlib
 import base64
+import signal
+
+
+def sigterm_handler(sig, frame):
+    exit(1)
+
+
+signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, signal.default_int_handler)
 
 
 class MultienvBenchKernel:
@@ -79,11 +88,18 @@ class MultienvBenchKernel:
         self.env_socket = env_socket
         self.gcc_socket = gcc_socket
 
+        self.gcc_instance = None
+
         self.gcc_socket.bind(self.socket_name)
         self.env_socket.bind(f"\0{self.args.bench_name}:backend_{self.args.instance}")
         logging.debug("KERNEL: init end")
 
     def final_cleanup(self):
+        if self.gcc_instance != None:
+            try:
+                self.gcc_instance.wait(30)
+            except TimeoutExpired:
+                pass
         cwd = os.path.abspath(os.getcwd())
         if cwd.startswith("/tmp") or cwd.startswith("/run"):
             shutil.rmtree(os.getcwd())
@@ -146,6 +162,7 @@ class MultienvBenchKernel:
             run(
                 "${AARCH_PREFIX}nm --extern-only --defined-only -v --print-file-name pg_main.elf > symtab",
                 shell=True,
+                capture_output=True,
             )
             run("${AARCH_PREFIX}gprof -s -Ssymtab pg_main.elf", shell=True, check=True)
 
@@ -175,22 +192,21 @@ class MultienvBenchKernel:
                 )
 
     def compile_instrumented(self):
-        gcc_instance = Popen(
+        self.gcc_instance = Popen(
             self.gprof_build_str, shell=True
         )  # Compile with gprof to get per-function runtime info
 
         while not os.path.exists("gcc_plugin.soc"):
-            gcc_instance.poll()
-            if gcc_instance.returncode != None:
+            self.gcc_instance.poll()
+            if self.gcc_instance.returncode != None:
                 print(
-                    f"gcc failed: return code {gcc_instance.returncode}\n",
+                    f"gcc failed: return code {self.gcc_instance.returncode}\n",
                     file=sys.stderr,
                 )
-                self.final_cleanup()
                 exit(1)
             pass
 
-        while gcc_instance.poll() == None:
+        while self.gcc_instance.poll() == None:
             try:
                 fun_name = self.gcc_socket.recv(4096, socket.MSG_DONTWAIT).decode(
                     "utf-8"
@@ -209,15 +225,15 @@ class MultienvBenchKernel:
             except BlockingIOError:
                 pass
 
-        if gcc_instance.wait() != 0:
+        if self.gcc_instance.wait() != 0:
             print(
-                f"gcc failed: return code {gcc_instance.returncode}\n",
+                f"gcc failed: return code {self.gcc_instance.returncode}\n",
                 file=sys.stderr,
             )
-            self.final_cleanup()
             exit(1)
 
     def encode_fun_name(self, fun_name):
+        fun_name = fun_name.partition(".")[0]
         avail_length = (
             107 - len(self.args.bench_name) - len(str(self.args.instance)) - 2
         )
@@ -236,7 +252,6 @@ class MultienvBenchKernel:
                 f"Expected '{self.args.bench_name}' got '{parsed_addr[1]}'",
                 file=sys.stderr,
             )
-            self.final_cleanup()
             exit(1)
         if int(parsed_addr[3]) != self.args.instance:
             print(
@@ -244,7 +259,6 @@ class MultienvBenchKernel:
                 f"Expected '{self.args.instance}' got '{parsed_addr[3]}'",
                 file=sys.stderr,
             )
-            self.final_cleanup()
             exit(1)
         if parsed_addr[2] not in self.bench_symbols:
             print(
@@ -252,7 +266,6 @@ class MultienvBenchKernel:
                 f"Got '{parsed_addr[2]}'",
                 file=sys.stderr,
             )
-            self.final_cleanup()
             exit(1)
 
     def add_env_to_list(self, pass_list, addr):
@@ -296,26 +309,24 @@ class MultienvBenchKernel:
                         continue
                 if not afk_envs_exist:
                     logging.debug("KERNEL: I have fallen and will not get up")
-                    self.final_cleanup()
                     exit(0)
 
     def compile_for_size(self):
-        gcc_instance = Popen(
+        self.gcc_instance = Popen(
             self.build_str, shell=True
         )  # Compile without gprof do all the compilation stuff
 
         while not os.path.exists("gcc_plugin.soc"):
-            gcc_instance.poll()
-            if gcc_instance.returncode != None:
+            self.gcc_instance.poll()
+            if self.gcc_instance.returncode != None:
                 print(
-                    f"gcc failed: return code {gcc_instance.returncode}\n",
+                    f"gcc failed: return code {self.gcc_instance.returncode}\n",
                     file=sys.stderr,
                 )
-                self.final_cleanup()
                 exit(1)
             pass
 
-        while gcc_instance.poll() == None:
+        while self.gcc_instance.poll() == None:
             try:
                 fun_name = self.gcc_socket.recv(4096, socket.MSG_DONTWAIT).decode(
                     "utf-8"
@@ -332,13 +343,19 @@ class MultienvBenchKernel:
                     )
                     embedding = self.gcc_socket.recv(1024 * self.EMBED_LEN_MULTIPLIER)
                     logging.debug(f"KERNEL: Got embedding from gcc")
-                    self.env_socket.sendto(
-                        embedding,
-                        f"\0{self.args.bench_name}:{sock_fun_name}_{self.args.instance}".encode(
-                            "utf-8"
-                        ),
-                    )
-                    logging.debug(f"KERNEL: Sent embedding to env")
+                    try:
+                        self.env_socket.sendto(
+                            embedding,
+                            f"\0{self.args.bench_name}:{sock_fun_name}_{self.args.instance}".encode(
+                                "utf-8"
+                            ),
+                        )
+                        logging.debug(f"KERNEL: Sent embedding to env")
+                    except (ConnectionError, FileNotFoundError):
+                        print(
+                            f"Environment [{sock_fun_name}] unexpectedly died",
+                            file=sys.stderr,
+                        )
                 else:
                     logging.debug(f"KERNEL: No list for {sock_fun_name}")
                     list_msg = bytes(1)
@@ -347,29 +364,32 @@ class MultienvBenchKernel:
             except BlockingIOError:
                 pass
 
-        if gcc_instance.wait() != 0:
+        if self.gcc_instance.wait() != 0:
             print(
-                f"gcc failed: return code {gcc_instance.returncode}\n",
+                f"gcc failed: return code {self.gcc_instance.returncode}\n",
                 file=sys.stderr,
             )
-            self.final_cleanup()
             exit(1)
 
     def kernel_loop(self):
-        while True:
-            logging.debug("KERNEL: compilation cucle")
-            self.gather_active_envs()
-            logging.debug(f"KERNEL: collected lists {self.active_funcs_lists}")
-            self.compile_for_size()
-            logging.debug("KERNEL: compiled for size")
-            self.get_sizes()
-            logging.debug("KERNEL: got sizes")
-            self.compile_instrumented()
-            logging.debug("KERNEL: gprof compiled")
-            self.get_runtimes()
-            logging.debug("KERNEL: got runtimes")
-            self.sendout_profiles()
-            logging.debug("KERNEL: sent profiles")
+        try:
+            while True:
+                logging.debug("KERNEL: compilation cucle")
+                self.gather_active_envs()
+                logging.debug(f"KERNEL: collected lists {self.active_funcs_lists}")
+                self.compile_for_size()
+                logging.debug("KERNEL: compiled for size")
+                self.get_sizes()
+                logging.debug("KERNEL: got sizes")
+                self.compile_instrumented()
+                logging.debug("KERNEL: gprof compiled")
+                self.get_runtimes()
+                logging.debug("KERNEL: got runtimes")
+                self.sendout_profiles()
+                logging.debug("KERNEL: sent profiles")
+        except (Exception, SystemExit, KeyboardInterrupt) as e:
+            self.final_cleanup()
+            raise e
 
 
 if __name__ == "__main__":
