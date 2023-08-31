@@ -94,7 +94,9 @@ class MultienvBenchKernel:
         self.env_socket.bind(f"\0{self.args.bench_name}:backend_{self.args.instance}")
         logging.debug("KERNEL: init end")
 
-    def final_cleanup(self):
+    def final_cleanup(self, e):
+        if isinstance(e, SystemExit) and e.code == 1:
+            print(self.active_funcs_lists, file=sys.stderr, flush=True)
         if self.gcc_instance != None:
             try:
                 self.gcc_instance.wait(30)
@@ -151,6 +153,11 @@ class MultienvBenchKernel:
             self.sizes[self.encode_fun_name(pieces[3])] = int(pieces[1])
 
     def get_runtimes(self):
+        run(
+            "${AARCH_PREFIX}nm --extern-only --defined-only -v --print-file-name pg_main.elf > symtab",
+            shell=True,
+            capture_output=True,
+        )
         for i in range(0, self.args.bench_repeats):
             for run_str in self.args.run_string:
                 run(
@@ -159,16 +166,15 @@ class MultienvBenchKernel:
                     stdout=DEVNULL,
                     stderr=DEVNULL,
                 )
-            run(
-                "${AARCH_PREFIX}nm --extern-only --defined-only -v --print-file-name pg_main.elf > symtab",
-                shell=True,
-                capture_output=True,
-            )
-            run("${AARCH_PREFIX}gprof -s -Ssymtab pg_main.elf", shell=True, check=True)
+                run(
+                    "${AARCH_PREFIX}gprof -s -Ssymtab pg_main.elf",
+                    shell=True,
+                    check=True,
+                )
 
         runtime_data = (
             run(
-                "${AARCH_PREFIX}gprof -bp --no-demangle pg_main.elf",
+                "${AARCH_PREFIX}gprof -bp --no-demangle pg_main.elf gmon.sum",
                 shell=True,
                 capture_output=True,
                 check=True,
@@ -280,15 +286,16 @@ class MultienvBenchKernel:
             self.env_socket.settimeout(60)
             try:
                 self.add_env_to_list(*self.env_socket.recvfrom(4096))
-                self.env_socket.settimeout(None)
+                self.env_socket.settimeout(5)
                 logging.debug("KERNEL: got first env")
                 while True:
                     try:
                         logging.debug("KERNEL: env cycling wewo")
                         self.add_env_to_list(
-                            *self.env_socket.recvfrom(4096, socket.MSG_DONTWAIT)
+                            *self.env_socket.recvfrom(4096)
                         )
-                    except BlockingIOError:
+                    except (TimeoutError, socket.timeout):
+                        self.env_socket.settimeout(None)
                         break
                 break
             except (TimeoutError, socket.timeout):
@@ -388,7 +395,7 @@ class MultienvBenchKernel:
                 self.sendout_profiles()
                 logging.debug("KERNEL: sent profiles")
         except (Exception, SystemExit, KeyboardInterrupt) as e:
-            self.final_cleanup()
+            self.final_cleanup(e)
             raise e
 
 
