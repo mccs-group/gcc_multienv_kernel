@@ -120,15 +120,17 @@ class MultienvBenchKernel:
                 )
                 self.sizes[fun_name] = 0
             try:
+                profile_data = bytes(
+                    struct.pack(  # runtime_percent runtime_sec size
+                        "ddi",
+                        self.runtimes.get(fun_name, (0.0, 0.0))[0],
+                        self.runtimes.get(fun_name, (0.0, 0.0))[1],
+                        self.sizes[fun_name],
+                    )
+                )
+                message = self.embeddings[fun_name] + profile_data
                 self.env_socket.sendto(
-                    bytes(
-                        struct.pack(  # runtime_percent runtime_sec size
-                            "ddi",
-                            self.runtimes.get(fun_name, (0.0, 0.0))[0],
-                            self.runtimes.get(fun_name, (0.0, 0.0))[1],
-                            self.sizes[fun_name],
-                        )
-                    ),
+                    message,
                     func_env_address,
                 )
             except (ConnectionError, FileNotFoundError):
@@ -180,7 +182,7 @@ class MultienvBenchKernel:
                 check=True,
             )
             .stdout.decode("utf-8")
-            .splitlines()[5:]
+            .splitlines()
         )
         os.unlink("gmon.out")
         os.unlink("gmon.sum")
@@ -190,6 +192,7 @@ class MultienvBenchKernel:
             for fun_name in self.active_funcs_lists.keys():
                 self.runtimes[self.encode_fun_name(fun_name)] = (0.0, 0.0)
         else:
+            runtime_data = runtime_data[5:]
             for line in runtime_data:
                 pieces = line.split()
                 self.runtimes[self.encode_fun_name(pieces[-1])] = (
@@ -291,9 +294,7 @@ class MultienvBenchKernel:
                 while True:
                     try:
                         logging.debug("KERNEL: env cycling wewo")
-                        self.add_env_to_list(
-                            *self.env_socket.recvfrom(4096)
-                        )
+                        self.add_env_to_list(*self.env_socket.recvfrom(4096))
                     except (TimeoutError, socket.timeout):
                         self.env_socket.settimeout(None)
                         break
@@ -319,6 +320,8 @@ class MultienvBenchKernel:
                     exit(0)
 
     def compile_for_size(self):
+        self.embeddings = {}
+
         self.gcc_instance = Popen(
             self.build_str, shell=True
         )  # Compile without gprof do all the compilation stuff
@@ -350,19 +353,8 @@ class MultienvBenchKernel:
                     )
                     embedding = self.gcc_socket.recv(1024 * self.EMBED_LEN_MULTIPLIER)
                     logging.debug(f"KERNEL: Got embedding from gcc")
-                    try:
-                        self.env_socket.sendto(
-                            embedding,
-                            f"\0{self.args.bench_name}:{sock_fun_name}_{self.args.instance}".encode(
-                                "utf-8"
-                            ),
-                        )
-                        logging.debug(f"KERNEL: Sent embedding to env")
-                    except (ConnectionError, FileNotFoundError):
-                        print(
-                            f"Environment [{sock_fun_name}] unexpectedly died",
-                            file=sys.stderr,
-                        )
+                    emb_len = bytes(struct.pack("i", len(embedding)))
+                    self.embeddings[sock_fun_name] = emb_len + embedding
                 else:
                     logging.debug(f"KERNEL: No list for {sock_fun_name}")
                     list_msg = bytes(1)
