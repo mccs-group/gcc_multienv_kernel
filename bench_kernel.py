@@ -1,5 +1,11 @@
 #! /usr/bin/env python3
 
+"""GCC per-function phase reorder benchmark kernel
+
+This script serves as a layer between gcc compilation calls
+(with phase reorder plugin) and several CompilerGym gcc-multienv environments.
+"""
+
 import logging
 import socket
 from pathlib import Path
@@ -17,6 +23,7 @@ import signal
 
 
 def sigterm_handler(sig, frame):
+    """SystemExit exception is then caught to guarantee temporary directory removal"""
     exit(1)
 
 
@@ -26,6 +33,35 @@ signal.signal(signal.SIGINT, signal.default_int_handler)
 
 class MultienvBenchKernel:
     def __init__(self, env_socket, gcc_socket):
+        """
+        Parses command-line arguments and initializes kernel instance
+
+        Function arguments:
+            env_socket, gcc_socket -- UNIX datagram socket instances (not bound)
+
+        Command line arguments:
+        -r, --run
+            Arguments to pass to bench when running it
+
+        -b, --build
+            Additional arguments to pass to GCC
+
+        -n, --name
+            Name of the benchmark, impacts socket names (<name>:backend_<instance>)
+
+        -i, --instance
+            Instance number of benchmark, impacts socket names (<name>:backend_<instance>)
+
+        --repeats
+            Number of times that benchmark is run to profile for runtimes
+
+        -p, --plugin
+            Path to phase reorder plugin .so
+
+        Kernel expects all files required for benchmark build and run to already be placed into working dir
+        It also parses benchmark_info.txt file to get all possible symbol names
+        (used when checking for alive, but afk environments)
+        """
         logging.debug("KERNEL: init start")
         self.parser = argparse.ArgumentParser()
         self.parser.add_argument(
@@ -95,6 +131,10 @@ class MultienvBenchKernel:
         logging.debug("KERNEL: init end")
 
     def final_cleanup(self, e):
+        """
+        Function that removes working directory (only if /tmp or /run)
+        and prints all pass lists if exited with error or on signal
+        """
         if isinstance(e, SystemExit) and e.code == 1:
             print(self.active_funcs_lists, file=sys.stderr, flush=True)
         if self.gcc_instance != None:
@@ -109,6 +149,10 @@ class MultienvBenchKernel:
             os.unlink(self.socket_name)
 
     def sendout_profiles(self):
+        """
+        Send collected embeddings, size and runtime data to environments that have provided
+        lists before compilation start
+        """
         for fun_name in self.active_funcs_lists:
             func_env_address = (
                 f"\0{self.args.bench_name}:{fun_name}_{self.args.instance}"
@@ -140,6 +184,9 @@ class MultienvBenchKernel:
                 )
 
     def get_sizes(self):
+        """
+        Parses nm output to get symbol sizes
+        """
         size_info = (
             run(
                 "${AARCH_PREFIX}nm --print-size --size-sort --radix=d main.elf",
@@ -155,6 +202,10 @@ class MultienvBenchKernel:
             self.sizes[self.encode_fun_name(pieces[3])] = int(pieces[1])
 
     def get_runtimes(self):
+        """
+        Runs instrumented benchmarks, sums their runtime data using gprof
+        and parses its output for runtime information
+        """
         run(
             "${AARCH_PREFIX}nm --extern-only --defined-only -v --print-file-name pg_main.elf > symtab",
             shell=True,
@@ -201,6 +252,10 @@ class MultienvBenchKernel:
                 )
 
     def compile_instrumented(self):
+        """
+        Compiles benchmarks using received lists and with enabled -pg flag
+        (for per-function runtime profiling)
+        """
         self.gcc_instance = Popen(
             self.gprof_build_str, shell=True
         )  # Compile with gprof to get per-function runtime info
@@ -242,6 +297,10 @@ class MultienvBenchKernel:
             exit(1)
 
     def encode_fun_name(self, fun_name):
+        """
+        If needed, hashes symbol name and encodes it in base64 to fit into
+        108 characters socket addr length limitation
+        """
         fun_name = fun_name.partition(".")[0]
         avail_length = (
             107 - len(self.args.bench_name) - len(str(self.args.instance)) - 2
@@ -255,6 +314,9 @@ class MultienvBenchKernel:
             return fun_name
 
     def validate_addr(self, parsed_addr):
+        """
+        Checks if addres matches kernel benchmark name, instance number and symbol list
+        """
         if parsed_addr[1] != self.args.bench_name:
             print(
                 f"Got message from env with incorrect bench name. "
@@ -278,11 +340,21 @@ class MultienvBenchKernel:
             exit(1)
 
     def add_env_to_list(self, pass_list, addr):
+        """
+        Parses address, validates it and adds received pass list to
+        dictionary of lists to be used during next compilation cycle
+        """
         parsed_addr = re.match("\0(.*):(.*)_(\d*)", addr.decode("utf-8"))
         self.validate_addr(parsed_addr)
         self.active_funcs_lists[parsed_addr[2]] = pass_list
 
     def gather_active_envs(self):
+        """
+        Receives pass lists from envs and closes kernel if no active envs were detected after a minute delay
+
+        When the first list is received, sets 5 second socket timeout to
+        give other envs a chance to send their lists and returns after no new lists were received in this timeout
+        """
         while True:
             self.active_funcs_lists = {}
 
@@ -320,8 +392,10 @@ class MultienvBenchKernel:
                     exit(0)
 
     def compile_for_size(self):
+        """
+        Compiles benchmark with received lists and record embeddings
+        """
         self.embeddings = {}
-
         self.gcc_instance = Popen(
             self.build_str, shell=True
         )  # Compile without gprof do all the compilation stuff
@@ -371,6 +445,11 @@ class MultienvBenchKernel:
             exit(1)
 
     def kernel_loop(self):
+        """
+        Main kernel loop, which also catches exceptions
+        (including SystemExit, KeyboardInterrupt and that from SIGTERM signal)
+        and calls final_cleanup() when exception is caught
+        """
         try:
             while True:
                 logging.debug("KERNEL: compilation cucle")
