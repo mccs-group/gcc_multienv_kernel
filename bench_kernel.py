@@ -121,10 +121,13 @@ class MultienvBenchKernel:
         index = lines.index("functions:") + 1
         self.bench_symbols = [self.encode_fun_name(x) for x in lines[index:]]
 
-        long_fun_index = lines.index("long_functions:")
-        self.long_functions = [
-            self.encode_fun_name(x) for x in lines[long_fun_index:index]
-        ]
+        try:
+            long_fun_index = lines.index("long_functions:")
+            self.long_functions = [
+                self.encode_fun_name(x) for x in lines[long_fun_index:index]
+            ]
+        except ValueError:
+            self.long_functions = self.bench_symbols
 
         self.env_socket = env_socket
         self.gcc_socket = gcc_socket
