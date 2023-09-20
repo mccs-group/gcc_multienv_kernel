@@ -211,6 +211,7 @@ class MultienvBenchKernel:
             shell=True,
             capture_output=True,
         )
+        sum_exists = False
         for i in range(0, self.args.bench_repeats):
             for run_str in self.args.run_string:
                 run(
@@ -220,10 +221,11 @@ class MultienvBenchKernel:
                     stderr=DEVNULL,
                 )
                 run(
-                    "${AARCH_PREFIX}gprof -s -Ssymtab pg_main.elf",
+                    f"${{AARCH_PREFIX}}gprof -s -Ssymtab pg_main.elf gmon.out{' gmon.sum' if sum_exists else ''}",
                     shell=True,
                     check=True,
                 )
+                sum_exists = True
 
         runtime_data = (
             run(
