@@ -121,6 +121,11 @@ class MultienvBenchKernel:
         index = lines.index("functions:") + 1
         self.bench_symbols = [self.encode_fun_name(x) for x in lines[index:]]
 
+        long_fun_index = lines.index("long_functions:")
+        self.long_functions = [
+            self.encode_fun_name(x) for x in lines[long_fun_index:index]
+        ]
+
         self.env_socket = env_socket
         self.gcc_socket = gcc_socket
 
@@ -461,10 +466,18 @@ class MultienvBenchKernel:
                 logging.debug("KERNEL: compiled for size")
                 self.get_sizes()
                 logging.debug("KERNEL: got sizes")
-                self.compile_instrumented()
-                logging.debug("KERNEL: gprof compiled")
-                self.get_runtimes()
-                logging.debug("KERNEL: got runtimes")
+                # Compile for runtimes and profile only if we have functions that are known
+                # to have non-zero runtime
+                if (
+                    len(set(self.active_funcs_lists.keys()) & set(self.long_functions))
+                    > 0
+                ):
+                    self.compile_instrumented()
+                    logging.debug("KERNEL: gprof compiled")
+                    self.get_runtimes()
+                    logging.debug("KERNEL: got runtimes")
+                else:
+                    self.runtimes = {}
                 self.sendout_profiles()
                 logging.debug("KERNEL: sent profiles")
         except (Exception, SystemExit, KeyboardInterrupt) as e:
