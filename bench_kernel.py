@@ -20,6 +20,7 @@ import struct
 import hashlib
 import base64
 import signal
+import grp
 
 
 def sigterm_handler(sig, frame):
@@ -115,6 +116,12 @@ class MultienvBenchKernel:
         )
 
         self.EMBED_LEN_MULTIPLIER = 200
+
+        groups = os.getgroups()
+        self.can_renice = False
+        for group in groups:
+            if grp.getgrgid(group)[0] == 'nice':
+                self.can_renice = True
 
         symbols_list = Path("benchmark_info.txt")
         lines = [x.strip() for x in symbols_list.read_text().splitlines()]
@@ -220,6 +227,13 @@ class MultienvBenchKernel:
             capture_output=True,
         )
         sum_exists = False
+        if self.can_renice:
+            def qemu_renice():
+                pid = os.getpid()
+                os.system(f'sudo renice -n 0 {pid}')
+        else:
+            def qemu_renice():
+                pass
         for i in range(0, self.args.bench_repeats):
             for run_str in self.args.run_string:
                 run(
@@ -227,6 +241,7 @@ class MultienvBenchKernel:
                     shell=True,
                     stdout=DEVNULL,
                     stderr=DEVNULL,
+                    preexec_fn=qemu_renice
                 )
                 run(
                     f"${{AARCH_PREFIX}}gprof -s -Ssymtab pg_main.elf gmon.out{' gmon.sum' if sum_exists else ''}",
