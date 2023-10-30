@@ -101,17 +101,19 @@ class MultienvBenchKernel:
         if self.args.run_string == []:
             self.args.run_string = [""]
 
-        self.socket_name = "kernel.soc"
+        self.pid = os.getpid()
+        self.socket_name = f"kernel{self.pid}.soc"
+        self.gcc_name = f"gcc_plugin{self.pid}.soc"
 
         self.build_str = (
             f"$AARCH_GCC -fplugin={self.args.plugin_path} -O2 -fplugin-arg-plugin-dyn_replace=learning "
-            f"-fplugin-arg-plugin-remote_socket={self.socket_name} "
+            f"-fplugin-arg-plugin-remote_socket={self.socket_name} -fplugin-arg-plugin-socket_postfix={self.pid} "
             f"{self.args.build_string} -o main.elf"
         )
 
         self.gprof_build_str = (
             f"$AARCH_GCC -fplugin={self.args.plugin_path} -O2 -fplugin-arg-plugin-dyn_replace=learning "
-            f"-fplugin-arg-plugin-remote_socket={self.socket_name} -pg "
+            f"-fplugin-arg-plugin-remote_socket={self.socket_name} -fplugin-arg-plugin-socket_postfix={self.pid} -pg "
             f"{self.args.build_string} -o pg_main.elf"
         )
 
@@ -285,11 +287,11 @@ class MultienvBenchKernel:
             self.gprof_build_str, shell=True
         )  # Compile with gprof to get per-function runtime info
 
-        while not os.path.exists("gcc_plugin.soc"):
+        while not os.path.exists(self.gcc_name):
             self.gcc_instance.poll()
             if self.gcc_instance.returncode != None:
                 print(
-                    f"gcc failed: return code {self.gcc_instance.returncode}\n",
+                    f"gcc failed on startup: return code {self.gcc_instance.returncode}\n",
                     file=sys.stderr,
                 )
                 exit(1)
@@ -304,12 +306,12 @@ class MultienvBenchKernel:
                 if sock_fun_name in self.active_funcs_lists:
                     self.gcc_socket.sendto(
                         self.active_funcs_lists[sock_fun_name],
-                        "gcc_plugin.soc".encode("utf-8"),
+                        self.gcc_name.encode(),
                     )
                     embedding = self.gcc_socket.recv(1024 * self.EMBED_LEN_MULTIPLIER)
                 else:
                     list_msg = bytes(1)
-                    self.gcc_socket.sendto(list_msg, "gcc_plugin.soc".encode("utf-8"))
+                    self.gcc_socket.sendto(list_msg, self.gcc_name.encode())
                     embedding = self.gcc_socket.recv(1024 * self.EMBED_LEN_MULTIPLIER)
             except BlockingIOError:
                 pass
@@ -425,11 +427,11 @@ class MultienvBenchKernel:
             self.build_str, shell=True
         )  # Compile without gprof do all the compilation stuff
 
-        while not os.path.exists("gcc_plugin.soc"):
+        while not os.path.exists(self.gcc_name):
             self.gcc_instance.poll()
             if self.gcc_instance.returncode != None:
                 print(
-                    f"gcc failed: return code {self.gcc_instance.returncode}\n",
+                    f"gcc failed on startup: return code {self.gcc_instance.returncode}\n",
                     file=sys.stderr,
                 )
                 exit(1)
@@ -445,7 +447,7 @@ class MultienvBenchKernel:
                     logging.debug(f"KERNEL: Sending list for {sock_fun_name}")
                     self.gcc_socket.sendto(
                         self.active_funcs_lists[sock_fun_name],
-                        "gcc_plugin.soc".encode("utf-8"),
+                        self.gcc_name.encode(),
                     )
                     logging.debug(
                         f"KERNEL: Sent list {self.active_funcs_lists[sock_fun_name]} to gcc"
@@ -457,7 +459,7 @@ class MultienvBenchKernel:
                 else:
                     logging.debug(f"KERNEL: No list for {sock_fun_name}")
                     list_msg = bytes(1)
-                    self.gcc_socket.sendto(list_msg, "gcc_plugin.soc".encode("utf-8"))
+                    self.gcc_socket.sendto(list_msg, self.gcc_name.encode())
                     embedding = self.gcc_socket.recv(1024 * self.EMBED_LEN_MULTIPLIER)
             except BlockingIOError:
                 pass
