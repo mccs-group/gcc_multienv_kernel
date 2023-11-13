@@ -22,6 +22,7 @@ import base64
 import signal
 import grp
 
+logging.basicConfig(filename='kernel.log', level=logging.DEBUG)
 
 def sigterm_handler(sig, frame):
     """SystemExit exception is then caught to guarantee temporary directory removal"""
@@ -30,7 +31,6 @@ def sigterm_handler(sig, frame):
 
 signal.signal(signal.SIGTERM, sigterm_handler)
 signal.signal(signal.SIGINT, signal.default_int_handler)
-
 
 class MultienvBenchKernel:
     def __init__(self, env_socket, gcc_socket):
